@@ -3,6 +3,7 @@ import os
 import json
 
 from DBInterface import SafeInterface, functionsCollection
+from helpers import getProjects, getFiles
 
 # MAX_CHUNK_SIZE = 20_000
 MAX_CHUNK_SIZE = 8_192
@@ -75,6 +76,9 @@ def get_funcs(tree, contentText, filename=''):
 
     return funcs
 
+    print(f"Found funcs with these types/counts:")
+    print(json.dumps(typeCounts, indent=2))
+
 def extract(node, fullBytes):
     # TODO: Modify this to also try to get preceding comments for documentation
     name_node = None
@@ -95,90 +99,75 @@ def extract(node, fullBytes):
 
 MAX_FULL_FILE_LEN = 1_000
 
-projects = os.listdir('projects')
+projects = getProjects()
 print(projects)
 
 items_to_add = []
 docs = []
-func_types_processed = []
+file_types_processed = []
 
-for projName in projects:
-    maxlens = {}
-    projPath = f"projects/{projName}"
+for projPath in projects:
+    print(f"PROJ: {projPath}")
+    for fpath, contentText in getFiles(projPath).items():
+        fname = fpath.split('/')[-1]
+        if fname.startswith('.'):
+            continue
+        ftype = fname.split('.')[-1]
 
-    for root, dirs, files in os.walk(projPath):
-        if '/.' not in root: # ignore hidden files/dirs
+        try:
+            # Parse longer files for to just get functions
+            # if ftype == 'py' and len(contentText) > MAX_FULL_FILE_LEN:
+            if (ftype in PARSERS) and (len(contentText) > MAX_FULL_FILE_LEN):
+                parser = Parser()
+                parser.set_language(PARSERS[ftype])
+                print(ftype, ftype in PARSERS, len(contentText), len(contentText) > MAX_FULL_FILE_LEN)
+                print(parser)
 
-            for file in files:
-                if file.startswith('.'):
-                    continue
+                tree = parser.parse(contentText.encode('utf-8'))
+                funcs = get_funcs(tree, fpath)
 
-                fullpath = f"{root}/{file}"
-                ftype = file.split('.')[-1]
-                try:
-                    with open(fullpath) as f:
-                        contentText = f.read()
+                print(f"Found {len(funcs)} functions in {fpath}")
 
-                    with open(fullpath, 'rb') as f:
-                        contentBytes = f.read()
+                for node in funcs:
+                    funcName, funcText = extract(node, contentText.encode('utf-8'))
+                    # print(node)
+                    # print(funcName)
+                    # print(funcText)
+                    # print()
 
-                    maxlens[ftype] = max(len(contentText), maxlens.get(ftype, 0))
+                    item_object = {
+                        'type': 'function',
+                        'project': projPath,
+                        'file_path': fpath,
+                        'function_name': funcName,
+                        'text': funcText,
+                        'id': f"{fpath}:{funcName}"
+                    }
+                    items_to_add.append(item_object)
+                    docs.append(funcText)
+                    file_types_processed.append(ftype)
+            elif contentText:
+                # Add full text for short files
+                item_object = {
+                    'type': 'file',
+                    'project': projPath,
+                    'file_path': fpath,
+                    'function_name': '',
+                    'text': contentText,
+                    'id': fpath
+                }
+                items_to_add.append(item_object)
+                docs.append(contentText)
 
-                    # Parse longer files for to just get functions
-                    # if ftype == 'py' and len(contentText) > MAX_FULL_FILE_LEN:
-                    if (ftype in PARSERS) and (len(contentText) > MAX_FULL_FILE_LEN):
-                        justFilePath = fullpath[len(projPath)+1:]
-                        parser = Parser()
-                        parser.set_language(PARSERS[ftype])
-
-                        tree = parser.parse(contentBytes)
-                        funcs = get_funcs(tree, contentText, fullpath)
-
-                        # print(f"Working in file: {justFilePath}")
-                        # print(f"Built tree: {tree}")
-                        # print(f"Found funcs: {funcs}")
-
-                        for node in funcs:
-                            # funcName, funcText = extract(node, contentText)
-                            funcName, funcText = extract(node, contentBytes)
-                            # print(node)
-                            # print(funcName)
-                            # print(funcText)
-                            # print()
-
-                            item_object = {
-                                'type': 'function',
-                                'project': projName,
-                                'file_path': fullpath,
-                                'function_name': funcName,
-                                'text': funcText,
-                                'id': f"{fullpath}:{funcName}"
-                            }
-                            items_to_add.append(item_object)
-                            docs.append(funcText)
-                            func_types_processed.append(ftype)
-                    elif contentText:
-                        # Add full text for short files
-                        item_object = {
-                            'type': 'file',
-                            'project': projName,
-                            'file_path': fullpath,
-                            'function_name': '',
-                            'text': contentText,
-                            'id': fullpath
-                        }
-                        items_to_add.append(item_object)
-                        docs.append(contentText)
-
-                except UnicodeDecodeError:
-                    # print(f"skipping because of decode error on : {fullpath}")
-                    pass
+        except UnicodeDecodeError:
+            # print(f"skipping because of decode error on : {fullpath}")
+            pass
 
     # break
 
 print(f"Found {len(items_to_add):,} total items")
-print(f"Have functions in all of these file types:\n\t", end='')
-print('\n\t'.join(set(func_types_processed)))
+print(f"Have functions for all of these file types:\n\t", end='')
+print('\n\t'.join(set(file_types_processed)))
 
 # print(f"Found these node types:")
 # for nodeType, count in sorted(typeCounts.items(), key=lambda x: x[1], reverse=False):
@@ -197,11 +186,6 @@ for item in items_to_add:
     metas.append(result)
 doclens = [len(d) for d in docs]
 print(min(doclens), max(doclens))
-
-# for idx, meta in zip(ids, metas):
-#     print(idx)
-#     print(meta['file_path'])
-#     print()
 
 
 print(len(ids))
