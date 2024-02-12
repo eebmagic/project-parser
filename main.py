@@ -43,16 +43,21 @@ PARSERS = {
     'sh': Language('build/my-languages.so', 'bash'),
     'c': Language('build/my-languages.so', 'c'),
     'cpp': Language('build/my-languages.so', 'cpp'),
-    'rust': Language('build/my-languages.so', 'rust'),
+    'rs': Language('build/my-languages.so', 'rust'),
 }
 
 
 typeCounts = {}
 typeInstances = {}
 
-def get_funcs(tree, contentText, filename=''):
+def get_funcs(tree, filename='', verbose=False):
     # TODO: Change this to get classes, THEN funcs outside classes
     node = tree.root_node
+    keepers = [
+        'function_definition',
+        'class_definition',
+        'function_item'
+    ]
 
     q = [node]
     funcs = []
@@ -63,10 +68,7 @@ def get_funcs(tree, contentText, filename=''):
         if 'class' in curr.type:
             typeInstances[curr.type] = typeInstances.get(curr.type, []) + [(curr, filename)]
 
-        if curr.type == 'function_definition':
-            funcs.append(curr)
-            continue
-        elif curr.type == 'class_definition':
+        if curr.type in keepers:
             funcs.append(curr)
             continue
 
