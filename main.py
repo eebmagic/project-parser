@@ -1,20 +1,16 @@
 from tree_sitter import Language, Parser
-import os
 import json
+from hashlib import sha256
+from tqdm import tqdm
+import chromadb
 
-from DBInterface import SafeInterface, functionsCollection
-from helpers import getProjects, getFiles
+from helpers import getProjects, getFiles, getTokenCount, chunkByTokens
+from customEmbedding import CodetEmbedding
 
 # MAX_CHUNK_SIZE = 20_000
 MAX_CHUNK_SIZE = 8_192
-print(f"{MAX_CHUNK_SIZE = }")
-interface = SafeInterface(
-    functionsCollection,
-    charCap=MAX_CHUNK_SIZE,
-    threaded=False,
-    timeDelay=0.3,
-)
-
+MAX_TOKEN_COUNT = 6_000
+VERBOSE = False
 
 # TODO: Change these two sections to process what is in vendors dir
 Language.build_library(
@@ -78,8 +74,6 @@ def get_funcs(tree, filename='', verbose=False):
 
     return funcs
 
-    print(f"Found funcs with these types/counts:")
-    print(json.dumps(typeCounts, indent=2))
 
 def extract(node, fullBytes):
     # TODO: Modify this to also try to get preceding comments for documentation
@@ -93,7 +87,7 @@ def extract(node, fullBytes):
         name = fullBytes[name_node.start_byte:name_node.end_byte].decode('utf-8')
     else:
         name = ''
-        print(f"FAILED TO FIND NAME NODE FOR: {node}")
+        # print(f"FAILED TO FIND NAME NODE FOR: {node}")
 
     funcDef = fullBytes[node.start_byte:node.end_byte].decode('utf-8')
 
@@ -110,53 +104,82 @@ file_types_processed = []
 
 for projPath in projects:
     print(f"PROJ: {projPath}")
-    for fpath, contentText in getFiles(projPath).items():
+    processed = set()
+    for fpath, contentText in tqdm(getFiles(projPath).items()):
+
+        if fpath in processed:
+            print(f"ALREADY PROCESSED: {fpath}")
+            quit()
+        processed.add(fpath)
+
+
         fname = fpath.split('/')[-1]
         if fname.startswith('.'):
             continue
         ftype = fname.split('.')[-1]
+        file_types_processed.append(ftype)
 
         try:
             # Parse longer files for to just get functions
-            # if ftype == 'py' and len(contentText) > MAX_FULL_FILE_LEN:
             if (ftype in PARSERS) and (len(contentText) > MAX_FULL_FILE_LEN):
                 parser = Parser()
                 parser.set_language(PARSERS[ftype])
-                print(ftype, ftype in PARSERS, len(contentText), len(contentText) > MAX_FULL_FILE_LEN)
-                print(parser)
 
                 tree = parser.parse(contentText.encode('utf-8'))
                 funcs = get_funcs(tree, fpath)
 
-                print(f"Found {len(funcs)} functions in {fpath}")
-
                 for node in funcs:
                     funcName, funcText = extract(node, contentText.encode('utf-8'))
-                    # print(node)
-                    # print(funcName)
-                    # print(funcText)
-                    # print()
+                    tokenCount = getTokenCount(funcText)
+                    if tokenCount < MAX_TOKEN_COUNT:
+                        item_object = {
+                            'type': 'function',
+                            'node_type': node.type,
+                            'is_chunked': False,
+                            'project': projPath,
+                            'file_path': fpath,
+                            'file_type': ftype,
+                            'function_name': funcName,
+                            'text': funcText,
+                            'id': f"{fpath}:{funcName}",
+                            'unique_id': sha256((str(node.start_point) + funcText + fpath + projPath).encode('utf-8')).hexdigest(),
+                            'token_count': getTokenCount(funcText)
+                        }
+                        items_to_add.append(item_object)
+                        docs.append(funcText)
+                    else:
+                        chunks = chunkByTokens(funcText)
+                        for i, chunkText in enumerate(chunks):
+                            item_object = {
+                                'type': 'function',
+                                'node_type': node.type,
+                                'is_chunked': True,
+                                'project': projPath,
+                                'file_path': fpath,
+                                'file_type': ftype,
+                                'function_name': funcName,
+                                'text': chunkText,
+                                'id': f"{fpath}:{funcName}_({i+1}/{len(chunks)})",
+                                'unique_id': sha256((str(node.start_point) + chunkText + fpath + projPath).encode('utf-8')).hexdigest(),
+                                'token_count': getTokenCount(chunkText)
+                            }
+                            items_to_add.append(item_object)
+                            docs.append(chunkText)
 
-                    item_object = {
-                        'type': 'function',
-                        'project': projPath,
-                        'file_path': fpath,
-                        'function_name': funcName,
-                        'text': funcText,
-                        'id': f"{fpath}:{funcName}"
-                    }
-                    items_to_add.append(item_object)
-                    docs.append(funcText)
-                    file_types_processed.append(ftype)
-            elif contentText:
+            elif contentText and (len(contentText) < MAX_FULL_FILE_LEN):
                 # Add full text for short files
                 item_object = {
                     'type': 'file',
+                    'node_type': 'plaintext',
+                    'is_chunked': False,
                     'project': projPath,
                     'file_path': fpath,
+                    'file_type': ftype,
                     'function_name': '',
                     'text': contentText,
-                    'id': fpath
+                    'id': fpath,
+                    'unique_id': sha256((contentText + fpath + projPath).encode('utf-8')).hexdigest(),
+                    'tokenCount': getTokenCount(contentText)
                 }
                 items_to_add.append(item_object)
                 docs.append(contentText)
@@ -165,44 +188,62 @@ for projPath in projects:
             # print(f"skipping because of decode error on : {fullpath}")
             pass
 
-    # break
 
-print(f"Found {len(items_to_add):,} total items")
-print(f"Have functions for all of these file types:\n\t", end='')
-print('\n\t'.join(set(file_types_processed)))
-
-# print(f"Found these node types:")
-# for nodeType, count in sorted(typeCounts.items(), key=lambda x: x[1], reverse=False):
-#     print(f"{count:>5} {nodeType:>20}")
+if VERBOSE:
+    print(f"\nFound {len(items_to_add):,} total items")
+    print(f"Processed sources from all of these file types:\n\t", end='')
+    print('\n\t'.join(sorted(list(set(file_types_processed)))))
 
 
-print(f"\nADDING TO INTERFACE:")
-ids = [item['id'] for item in items_to_add]
+ids = [item['unique_id'] for item in items_to_add]
 docs = [item['text'] for item in items_to_add]
 metas = []
+metaMapping = {}
 for item in items_to_add:
-    result = {}
+    meta = {}
     for key, value in item.items():
-        if key not in ['text', 'id']:
-            result[key] = value
-    metas.append(result)
-doclens = [len(d) for d in docs]
-print(min(doclens), max(doclens))
+        if key not in ['text']:
+            meta[key] = value
+    
+    metas.append(meta)
+    metaMapping[item['unique_id']] = metaMapping.get(item['unique_id'], []) + [meta]
+        
 
+print(f"\nFound {len(ids):,} total items to index")
+anyDuplicated = len(ids) != len(set(ids))
+print(f"ANY DUPLICATED?: {anyDuplicated}")
 
-print(len(ids))
-print(len(set(ids)))
-print(f"ANY DUPLICATED?: {len(ids) != len(set(ids))}")
+if anyDuplicated:
+    counts = {}
+    for idx in ids:
+        counts[idx] = counts.get(idx, 0) + 1
+    duplicated = list(filter(lambda x: x[1] > 1, counts.items()))
 
-for i, idx in enumerate(ids):
-    for j, jdx in enumerate(ids):
-        if i < j and idx == jdx:
-            print(idx)
+    print(f"There are {len(duplicated)} duplicated ids:\n")
+    for idx, count in duplicated:
+        print(idx)
+        print(f"count: {count}")
+        print(json.dumps(metaMapping[idx], indent=2))
+        print()
 
+    assert False, "There are duplicated ids"
 
-interface.add(
+# Add to collection
+print(len(ids), len(docs), len(metas))
+
+client = chromadb.PersistentClient(path='./db')
+embedding_object = CodetEmbedding()
+
+collection = client.get_or_create_collection(
+    name='projects',
+    embedding_function=embedding_object
+)
+print(f"Current collection count: {collection.count()}")
+
+collection.add(
     ids=ids,
     documents=docs,
     metadatas=metas
-    # metadatas=items_to_add
 )
+
+print(f"NEW collection count: {collection.count()}")

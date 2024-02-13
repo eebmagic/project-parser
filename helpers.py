@@ -1,4 +1,7 @@
 import os
+import tiktoken
+
+enc = tiktoken.get_encoding("cl100k_base")
 
 
 def getProjects():
@@ -22,6 +25,19 @@ def getFiles(project, contents=True):
             fileContents[path] = None
 
     return fileContents
+
+
+def getTokenCount(text):
+    return len(enc.encode(text))
+
+
+def chunkByTokens(text, chunkSize=1_000, overlap=100):
+    tokens = enc.encode(text)
+    chunks = []
+    for i in range(0, len(tokens), chunkSize - overlap):
+        chunk = tokens[i:i + chunkSize]
+        chunks.append(enc.decode(chunk))
+    return chunks
 
 
 
