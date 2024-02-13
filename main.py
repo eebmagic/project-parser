@@ -1,17 +1,16 @@
 from tree_sitter import Language, Parser
-import os
 import json
 from hashlib import sha256
 from tqdm import tqdm
+import chromadb
 
-# from DBInterface import SafeInterface, functionsCollection
 from helpers import getProjects, getFiles, getTokenCount, chunkByTokens
+from customEmbedding import CodetEmbedding
 
 # MAX_CHUNK_SIZE = 20_000
 MAX_CHUNK_SIZE = 8_192
 MAX_TOKEN_COUNT = 6_000
 VERBOSE = False
-
 
 # TODO: Change these two sections to process what is in vendors dir
 Language.build_library(
@@ -129,17 +128,8 @@ for projPath in projects:
                 tree = parser.parse(contentText.encode('utf-8'))
                 funcs = get_funcs(tree, fpath)
 
-                # print(f"Found {len(funcs)} functions in {fpath}")
-
                 for node in funcs:
                     funcName, funcText = extract(node, contentText.encode('utf-8'))
-                    # print(node)
-                    # print(dir(node))
-                    # print(node.start_point)
-                    # quit()
-                    # print(funcName)
-                    # print(funcText)
-                    # print()
                     tokenCount = getTokenCount(funcText)
                     if tokenCount < MAX_TOKEN_COUNT:
                         item_object = {
@@ -205,13 +195,10 @@ if VERBOSE:
     print('\n\t'.join(sorted(list(set(file_types_processed)))))
 
 
-# ids = [item['id'] for item in items_to_add]
 ids = [item['unique_id'] for item in items_to_add]
 docs = [item['text'] for item in items_to_add]
 metas = []
-
 metaMapping = {}
-
 for item in items_to_add:
     meta = {}
     for key, value in item.items():
@@ -239,8 +226,24 @@ if anyDuplicated:
         print(json.dumps(metaMapping[idx], indent=2))
         print()
 
-    quit()
+    assert False, "There are duplicated ids"
 
 # Add to collection
-
 print(len(ids), len(docs), len(metas))
+
+client = chromadb.PersistentClient(path='./db')
+embedding_object = CodetEmbedding()
+
+collection = client.get_or_create_collection(
+    name='projects',
+    embedding_function=embedding_object
+)
+print(f"Current collection count: {collection.count()}")
+
+collection.add(
+    ids=ids,
+    documents=docs,
+    metadatas=metas
+)
+
+print(f"NEW collection count: {collection.count()}")
