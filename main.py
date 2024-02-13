@@ -102,8 +102,11 @@ items_to_add = []
 docs = []
 file_types_processed = []
 
+print(f"Found {len(projects)} total projects")
+
 for projPath in projects:
     print(f"PROJ: {projPath}")
+    print(f"Found {len(getFiles(projPath))} items in the project dir")
     processed = set()
     for fpath, contentText in tqdm(getFiles(projPath).items()):
 
@@ -227,6 +230,11 @@ if anyDuplicated:
         print()
 
     assert False, "There are duplicated ids"
+
+
+if len(ids) == 0:
+    print(f"No documents found to add.")
+    quit()
 
 # Add to collection
 print(len(ids), len(docs), len(metas))
