@@ -1,0 +1,6 @@
+tree_sitter
+chromadb
+tqdm
+torch
+transformers
+tiktoken
