@@ -12,8 +12,6 @@ class CodetEmbedding(EmbeddingFunction[Documents]):
         self.chunk_size = 10
 
     def __call__(self, input: Documents) -> Embeddings:
-        print(f"MAKING EMBED CALL FOR {len(input)} DOCS")
-
         # No chunking
         if len(input) < self.chunk_size:
             inputs = self.tokenizer(input, padding=True, truncation=True, return_tensors="pt")
